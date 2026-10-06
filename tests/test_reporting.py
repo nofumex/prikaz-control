@@ -192,6 +192,8 @@ def test_scheduler_records_delivery_and_does_not_repeat_after_restart(tmp_path: 
     bot.send = lambda chat_id, text, markup=None: sent.append((chat_id, text))
     before_send = dt.datetime(2026, 10, 6, 8, 59, tzinfo=ZoneInfo(cfg.timezone))
     scheduled = dt.datetime(2026, 10, 6, 9, 0, tzinfo=ZoneInfo(cfg.timezone))
+    assert bot.scheduler_tick(dt.datetime(2026, 10, 6, 14, 2, tzinfo=ZoneInfo(cfg.timezone))) is False
+    assert sent == []
     assert bot.scheduler_tick(before_send) is False
     assert bot.scheduler_tick(scheduled) is True
     assert bot.scheduler_tick(scheduled + dt.timedelta(minutes=1)) is False

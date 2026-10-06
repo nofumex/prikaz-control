@@ -240,7 +240,7 @@ class ReportBot:
     def scheduler_tick(self, now: dt.datetime | None = None) -> bool:
         now = now or dt.datetime.now(self.tz)
         hour, minute = map(int, self.config.report_time.split(":"))
-        if (now.hour, now.minute) < (hour, minute):
+        if (now.hour, now.minute) != (hour, minute):
             return False
         return self.scheduled_send(now.date() - dt.timedelta(days=1))
 
