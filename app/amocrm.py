@@ -40,6 +40,10 @@ class AmoCRM:
                     time.sleep(int(response.headers.get("Retry-After", "2")))
                     continue
                 response.raise_for_status()
+
+                if response.status_code == 204:
+                    return {}
+
                 try:
                     payload = response.json()
                 except (requests.exceptions.JSONDecodeError, ValueError) as exc:
