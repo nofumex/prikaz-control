@@ -21,17 +21,34 @@ class Config:
     report_time: str
     report_database_path: Path
     page_size: int = 5
+    manager_ids: tuple[int, ...] = ()
 
 
 def load_config() -> Config:
     load_dotenv()
     required = {
         key: os.getenv(key, "").strip()
-        for key in ("REPORT_TG_BOT_TOKEN", "REPORT_CHAT_ID", "SOURCE_DATABASE_URL", "AMOCRM_BASE_URL", "AMOCRM_ACCESS_TOKEN")
+        for key in ("REPORT_TG_BOT_TOKEN", "SOURCE_DATABASE_URL", "AMOCRM_BASE_URL", "AMOCRM_ACCESS_TOKEN")
     }
     missing = [key for key, value in required.items() if not value]
     if missing:
         raise RuntimeError("Missing required environment variables: " + ", ".join(missing))
+    managers_value = os.getenv("MANAGER_IDS", "").strip()
+    if managers_value:
+        try:
+            manager_ids = tuple(dict.fromkeys(int(value.strip()) for value in managers_value.split(",") if value.strip()))
+        except ValueError as exc:
+            raise RuntimeError("MANAGER_IDS must be comma-separated Telegram chat IDs") from exc
+    else:
+        legacy_chat_id = os.getenv("REPORT_CHAT_ID", "").strip()
+        if not legacy_chat_id:
+            raise RuntimeError("Missing required environment variable: MANAGER_IDS")
+        try:
+            manager_ids = (int(legacy_chat_id),)
+        except ValueError as exc:
+            raise RuntimeError("REPORT_CHAT_ID must be a Telegram chat ID") from exc
+    if not manager_ids:
+        raise RuntimeError("MANAGER_IDS must contain at least one Telegram chat ID")
     timezone = os.getenv("TIMEZONE", "Asia/Krasnoyarsk").strip()
     try:
         ZoneInfo(timezone)
@@ -46,7 +63,7 @@ def load_config() -> Config:
         raise RuntimeError("DAILY_REPORT_TIME must be HH:MM") from exc
     return Config(
         telegram_token=required["REPORT_TG_BOT_TOKEN"],
-        report_chat_id=int(required["REPORT_CHAT_ID"]),
+        report_chat_id=manager_ids[0],
         source_database_url=required["SOURCE_DATABASE_URL"],
         amocrm_base_url=required["AMOCRM_BASE_URL"].rstrip("/"),
         amocrm_access_token=required["AMOCRM_ACCESS_TOKEN"],
@@ -56,4 +73,5 @@ def load_config() -> Config:
         report_time=report_time,
         report_database_path=Path(os.getenv("REPORT_DATABASE_PATH", "data/reporting.sqlite3")),
         page_size=max(1, min(20, int(os.getenv("REPORT_PAGE_SIZE", "5")))),
+        manager_ids=manager_ids,
     )

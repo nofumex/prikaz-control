@@ -154,8 +154,11 @@ class ReportBot:
         latest_day = dt.datetime.now(self.tz).date() - dt.timedelta(days=1)
         day_nav = []
         day_nav.append({"text": "←", "callback_data": f"r:{day - dt.timedelta(days=1)}"})
+        day_nav.append({"text": day.strftime("%d.%m"), "callback_data": "noop"})
         if day < latest_day:
             day_nav.append({"text": "→", "callback_data": f"r:{day + dt.timedelta(days=1)}"})
+        else:
+            day_nav.append({"text": "→", "callback_data": "noop"})
         rows.append(day_nav)
         return "\n".join(lines), self.inline(rows)
 
@@ -199,23 +202,34 @@ class ReportBot:
 
     def scheduled_send(self, day: dt.date) -> bool:
         key = day.isoformat()
-        if self.store.was_sent(key, self.config.report_chat_id):
+        recipients = self.config.manager_ids or (self.config.report_chat_id,)
+        if all(self.store.was_sent(key, chat_id) for chat_id in recipients):
             return False
         # Manual requests reuse their snapshot; scheduled delivery must always
         # capture the latest source data immediately before it is sent.
         report = self.get_report(day, refresh=True)
         text, markup = self.report_screen(report)
-        if not self.store.claim_delivery(key, self.config.report_chat_id):
-            return False
-        try:
-            self.send(self.config.report_chat_id, text, markup)
-        except Exception:
-            self.store.release_delivery(key, self.config.report_chat_id)
-            logger.exception("Daily report send failed; delivery claim released for retry date=%s", key)
-            raise
-        self.store.mark_sent(key, self.config.report_chat_id)
-        logger.info("Daily report delivered date=%s chat_id=%s", key, self.config.report_chat_id)
-        return True
+        delivered = False
+        errors = []
+        for chat_id in recipients:
+            if self.store.was_sent(key, chat_id) or not self.store.claim_delivery(key, chat_id):
+                continue
+            try:
+                self.send(chat_id, text, markup)
+            except Exception as exc:
+                self.store.release_delivery(key, chat_id)
+                logger.exception("Daily report send failed; delivery claim released for retry date=%s chat_id=%s", key, chat_id)
+                errors.append(exc)
+                continue
+            self.store.mark_sent(key, chat_id)
+            logger.info("Daily report delivered date=%s chat_id=%s", key, chat_id)
+            delivered = True
+        if errors:
+            raise errors[0]
+        return delivered
+
+    def is_manager(self, chat_id: int) -> bool:
+        return chat_id in (self.config.manager_ids or (self.config.report_chat_id,))
 
     def scheduler_tick(self, now: dt.datetime | None = None) -> bool:
         now = now or dt.datetime.now(self.tz)
@@ -230,7 +244,7 @@ class ReportBot:
             self.answer_callback(str(callback.get("id") or ""))
             message = callback.get("message") or {}
             chat_id = int((message.get("chat") or {}).get("id") or 0)
-            if chat_id != self.config.report_chat_id:
+            if not self.is_manager(chat_id):
                 return
             message_id = int(message.get("message_id") or 0)
             data = str(callback.get("data") or "")
@@ -268,7 +282,7 @@ class ReportBot:
 
         message = update.get("message") or {}
         chat_id = int((message.get("chat") or {}).get("id") or 0)
-        if chat_id != self.config.report_chat_id:
+        if not self.is_manager(chat_id):
             return
         text = str(message.get("text") or "").strip()
         command = text.split()[0].split("@", 1)[0].lower() if text else ""

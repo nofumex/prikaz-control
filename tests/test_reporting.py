@@ -114,12 +114,15 @@ def test_report_menu_has_three_categories_and_day_navigation():
     ]
     assert "Telegram" not in text and "MAX" not in text
     assert "💰" not in text and "📞" not in text
-    assert [button["text"] for button in markup["inline_keyboard"][-1]] == ["←"]
+    assert [button["text"] for button in markup["inline_keyboard"][-1]] == ["←", latest.strftime("%d.%m"), "→"]
     assert markup["inline_keyboard"][-1][0]["callback_data"] == f"r:{latest - dt.timedelta(days=1)}"
+    assert markup["inline_keyboard"][-1][1]["callback_data"] == "noop"
+    assert markup["inline_keyboard"][-1][2]["callback_data"] == "noop"
 
     historical = {**report, "date": (latest - dt.timedelta(days=1)).isoformat()}
     _, historical_markup = bot.report_screen(historical)
-    assert [button["text"] for button in historical_markup["inline_keyboard"][-1]] == ["←", "→"]
+    assert [button["text"] for button in historical_markup["inline_keyboard"][-1]] == ["←", historical["date"][8:10] + "." + historical["date"][5:7], "→"]
+    assert historical_markup["inline_keyboard"][-1][2]["callback_data"] == f"r:{latest.isoformat()}"
 
 
 def test_subscribed_deal_list_combines_platforms_and_deduplicates():
@@ -230,6 +233,27 @@ def test_failed_telegram_send_releases_claim_and_next_attempt_succeeds(tmp_path:
     assert len(attempts) == 2
     assert store.was_sent(day.isoformat(), 77) is True
     assert bot.scheduled_send(day) is False
+    store.conn.close()
+
+
+def test_scheduler_sends_once_to_every_manager_and_tracks_each_chat(tmp_path: Path):
+    cfg = Config("token", 77, "sqlite:///unused", "https://amo.test", "x", "Судебный приказ", "Клиенты по судебному приказу", "Asia/Krasnoyarsk", "09:00", tmp_path / "reports.sqlite3", manager_ids=(77, 88))
+    store = Store(cfg.report_database_path)
+    report = {"date": "2026-10-05", "timezone": cfg.timezone, "subscribed": {"telegram": 1, "max": 2}, "paid_count": 0, "contact_count": 0, "deals": {"paid": [], "contact": [], "subscribed_telegram": [], "subscribed_max": []}, "deal_names": {}}
+
+    class FakeAmo:
+        pass
+
+    bot = ReportBot(cfg, store, FakeAmo())
+    bot.build_report = lambda day: report
+    sent_to = []
+    bot.send = lambda chat_id, text, markup=None: sent_to.append(chat_id)
+    day = dt.date(2026, 10, 5)
+    assert bot.scheduled_send(day) is True
+    assert sent_to == [77, 88]
+    assert store.was_sent(day.isoformat(), 77) and store.was_sent(day.isoformat(), 88)
+    assert bot.scheduled_send(day) is False
+    assert sent_to == [77, 88]
     store.conn.close()
 
 
