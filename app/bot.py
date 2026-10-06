@@ -156,7 +156,7 @@ class ReportBot:
         day_nav = []
         day_nav.append({"text": "←", "callback_data": f"r:{day - dt.timedelta(days=1)}"})
         day_nav.append({"text": day.strftime("%d.%m"), "callback_data": "noop"})
-        if allow_today and day < latest_day:
+        if day < latest_day:
             day_nav.append({"text": "→", "callback_data": f"r:{day + dt.timedelta(days=1)}"})
         else:
             day_nav.append({"text": "→", "callback_data": "noop"})

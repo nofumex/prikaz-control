@@ -303,6 +303,11 @@ def test_non_report_chat_starts_at_yesterday_and_only_paginates_backwards(tmp_pa
     assert day_nav[0]["callback_data"] == f"r:{today - dt.timedelta(days=2)}"
     assert day_nav[1]["callback_data"] == "noop"
     assert day_nav[2]["callback_data"] == "noop"
+
+    older_report = {**report, "date": (today - dt.timedelta(days=2)).isoformat()}
+    _, older_markup = bot.report_screen(older_report)
+    older_nav = older_markup["inline_keyboard"][-1]
+    assert older_nav[2]["callback_data"] == f"r:{today - dt.timedelta(days=1)}"
     store.conn.close()
 
 
