@@ -84,7 +84,10 @@ class ReportBot:
         try:
             chunks = split_html_lines(text)
             for index, chunk in enumerate(chunks):
-                self.tg("sendMessage", {"chat_id": chat_id, "text": chunk, "parse_mode": "HTML", "disable_web_page_preview": True, "reply_markup": markup if index == len(chunks) - 1 else None}, retries=1)
+                payload = {"chat_id": chat_id, "text": chunk, "parse_mode": "HTML", "disable_web_page_preview": True}
+                if markup is not None and index == len(chunks) - 1:
+                    payload["reply_markup"] = markup
+                self.tg("sendMessage", payload, retries=1)
         except Exception:
             logger.exception("Telegram message delivery failed chat_id=%s", chat_id)
             raise
@@ -140,6 +143,33 @@ class ReportBot:
     @staticmethod
     def inline(rows: list[list[dict[str, str]]]) -> dict[str, Any]:
         return {"inline_keyboard": rows}
+
+    def main_menu_screen(self, chat_id: int, day: dt.date) -> tuple[str, dict[str, Any]]:
+        rows = [
+            [{"text": title, "callback_data": f"l:{day}:{kind}:0"}]
+            for kind, (_, title) in REPORT_KINDS.items()
+        ]
+        day_nav = [
+            {"text": "←", "callback_data": f"h:{day - dt.timedelta(days=1)}"},
+            {"text": day.strftime("%d.%m"), "callback_data": "noop"},
+        ]
+        latest_day = self.latest_allowed_day(chat_id)
+        if day < latest_day:
+            day_nav.append({"text": "→", "callback_data": f"h:{day + dt.timedelta(days=1)}"})
+        else:
+            day_nav.append({"text": "→", "callback_data": "noop"})
+        rows.append(day_nav)
+        return f"<b>Главное меню</b>\n📊 Судебный приказ · {day.strftime('%d.%m.%Y')}", self.inline(rows)
+
+    def show_main_menu(self, chat_id: int, day: dt.date, message_id: int = 0) -> None:
+        if day > self.latest_allowed_day(chat_id):
+            self.send(chat_id, "Доступны отчеты только за вчерашний день и ранее.")
+            return
+        text, markup = self.main_menu_screen(chat_id, day)
+        if message_id:
+            self.edit(chat_id, message_id, text, markup)
+        else:
+            self.send(chat_id, text, markup)
 
     def report_screen(self, report: dict[str, Any], allow_today: bool = False) -> tuple[str, dict[str, Any]]:
         day = dt.date.fromisoformat(report["date"])
@@ -249,7 +279,7 @@ class ReportBot:
     def scheduler_tick(self, now: dt.datetime | None = None) -> bool:
         now = now or dt.datetime.now(self.tz)
         hour, minute = map(int, self.config.report_time.split(":"))
-        if (now.hour, now.minute) != (hour, minute):
+        if (now.hour, now.minute) < (hour, minute):
             return False
         return self.scheduled_send(now.date() - dt.timedelta(days=1))
 
@@ -266,6 +296,9 @@ class ReportBot:
             try:
                 if data == "noop":
                     return
+                if data.startswith("h:"):
+                    target_day = dt.date.fromisoformat(data[2:])
+                    self.show_main_menu(chat_id, target_day, message_id)
                 if data.startswith("r:"):
                     target_day = dt.date.fromisoformat(data[2:])
                     if target_day > self.latest_allowed_day(chat_id):
@@ -314,7 +347,7 @@ class ReportBot:
             try:
                 today = dt.datetime.now(self.tz).date()
                 self.store.activate_manager(chat_id, today.isoformat())
-                self.show_report(chat_id, self.latest_allowed_day(chat_id))
+                self.show_main_menu(chat_id, self.latest_allowed_day(chat_id))
             except Exception:
                 logger.exception("Manager activation failed chat_id=%s", chat_id)
                 self.send(chat_id, "Не удалось открыть меню. Ошибка записана в журнал.")
