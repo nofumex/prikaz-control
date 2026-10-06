@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.amocrm import deal_detail_text
+from app.amocrm import AmoCRM, AmoCRMResponseError, deal_detail_text
 from app.bot import ReportBot, paginate
 from app.config import Config
 from app.metrics import calculate_metrics, local_day_bounds, retain_verified_deals
@@ -238,3 +238,34 @@ def test_every_callback_is_answered():
     bot.tg = lambda method, payload, retries=3: calls.append((method, payload))
     bot.handle_update({"callback_query": {"id": "cb-1", "data": "noop", "message": {"chat": {"id": 77}, "message_id": 9}}})
     assert calls == [("answerCallbackQuery", {"callback_query_id": "cb-1"})]
+
+
+def test_amocrm_non_json_success_response_reports_status_and_does_not_retry():
+    client = AmoCRM("https://example.amocrm.ru", "test-token")
+
+    class Response:
+        status_code = 200
+        headers = {"Content-Type": "text/html; charset=utf-8"}
+        text = "<html><title>Login required</title></html>"
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            raise ValueError("not JSON")
+
+    class Session:
+        calls = 0
+
+        def get(self, url, timeout):
+            self.calls += 1
+            return Response()
+
+    session = Session()
+    client.session = session
+    with pytest.raises(AmoCRMResponseError, match="HTTP 200, Content-Type=text/html") as error:
+        client.get("/api/v4/events")
+    assert "Login required" in str(error.value)
+    assert session.calls == 1

@@ -13,6 +13,10 @@ import requests
 logger = logging.getLogger(__name__)
 
 
+class AmoCRMResponseError(RuntimeError):
+    """The amoCRM endpoint returned a successful HTTP response we cannot decode."""
+
+
 def esc(value: Any) -> str:
     return html.escape("" if value is None else str(value), quote=False)
 
@@ -36,7 +40,29 @@ class AmoCRM:
                     time.sleep(int(response.headers.get("Retry-After", "2")))
                     continue
                 response.raise_for_status()
-                return response.json()
+                try:
+                    payload = response.json()
+                except (requests.exceptions.JSONDecodeError, ValueError) as exc:
+                    content_type = response.headers.get("Content-Type", "unknown")
+                    preview = " ".join((response.text or "").split())[:240] or "<empty body>"
+                    message = (
+                        f"amoCRM GET {path} returned non-JSON response "
+                        f"(HTTP {response.status_code}, Content-Type={content_type}): {preview}"
+                    )
+                    logger.error("%s", message)
+                    # This is a response-format problem, not a transient network
+                    # failure: retrying the identical request only repeats noise.
+                    raise AmoCRMResponseError(message) from exc
+                if not isinstance(payload, dict):
+                    message = (
+                        f"amoCRM GET {path} returned unexpected JSON type "
+                        f"{type(payload).__name__} (HTTP {response.status_code})"
+                    )
+                    logger.error("%s", message)
+                    raise AmoCRMResponseError(message)
+                return payload
+            except AmoCRMResponseError:
+                raise
             except requests.RequestException:
                 logger.exception("amoCRM GET failed path=%s", path)
                 if attempt == 3:
