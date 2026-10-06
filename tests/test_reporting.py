@@ -3,6 +3,8 @@ import sqlite3
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from app.amocrm import deal_detail_text
 from app.bot import ReportBot, paginate
 from app.config import Config
@@ -139,6 +141,7 @@ def test_scheduler_records_delivery_and_does_not_repeat_after_restart(tmp_path: 
         pass
 
     bot = ReportBot(cfg, store, FakeAmo())
+    bot.build_report = lambda day: report
     sent = []
     bot.send = lambda chat_id, text, markup=None: sent.append((chat_id, text))
     before_send = dt.datetime(2026, 10, 6, 8, 59, tzinfo=ZoneInfo(cfg.timezone))
@@ -155,6 +158,77 @@ def test_scheduler_records_delivery_and_does_not_repeat_after_restart(tmp_path: 
     assert restarted.scheduled_send(dt.date(2026, 10, 5)) is False
     assert len(sent) == 1
     restarted_store.conn.close()
+
+
+def test_failed_telegram_send_releases_claim_and_next_attempt_succeeds(tmp_path: Path):
+    cfg = Config("token", 77, "sqlite:///unused", "https://amo.test", "x", "Судебный приказ", "Клиенты по судебному приказу", "Asia/Krasnoyarsk", "09:00", tmp_path / "reports.sqlite3")
+    store = Store(cfg.report_database_path)
+    report = {"date": "2026-10-05", "timezone": cfg.timezone, "subscribed": {"telegram": 0, "max": 0}, "paid_count": 0, "contact_count": 0, "deals": {"paid": [], "contact": [], "subscribed_telegram": [], "subscribed_max": []}, "deal_names": {}}
+    store.save_report(report)
+
+    class FakeAmo:
+        pass
+
+    bot = ReportBot(cfg, store, FakeAmo())
+    bot.build_report = lambda day: report
+    attempts = []
+
+    def fail_then_send(chat_id, text, markup=None):
+        attempts.append(text)
+        if len(attempts) == 1:
+            raise RuntimeError("Telegram unavailable")
+
+    bot.send = fail_then_send
+    day = dt.date(2026, 10, 5)
+    with pytest.raises(RuntimeError, match="Telegram unavailable"):
+        bot.scheduled_send(day)
+    assert store.was_sent(day.isoformat(), 77) is False
+    # The next scheduler run performs its own claim/send sequence.
+    assert bot.scheduled_send(day) is True
+    assert len(attempts) == 2
+    assert store.was_sent(day.isoformat(), 77) is True
+    assert bot.scheduled_send(day) is False
+    store.conn.close()
+
+
+def test_scheduler_refreshes_report_created_by_manual_request(tmp_path: Path):
+    cfg = Config("token", 77, "sqlite:///unused", "https://amo.test", "x", "Судебный приказ", "Клиенты по судебному приказу", "Asia/Krasnoyarsk", "09:00", tmp_path / "reports.sqlite3")
+    store = Store(cfg.report_database_path)
+    old = {"date": "2026-10-05", "timezone": cfg.timezone, "subscribed": {"telegram": 0, "max": 0}, "paid_count": 1, "contact_count": 0, "deals": {"paid": [], "contact": [], "subscribed_telegram": [], "subscribed_max": []}, "deal_names": {}}
+
+    class FakeAmo:
+        pass
+
+    bot = ReportBot(cfg, store, FakeAmo())
+    manual_sends = []
+
+    def manual_build(day):
+        store.save_report(old)
+        return old
+
+    bot.build_report = manual_build
+    bot.send = lambda chat_id, text, markup=None: manual_sends.append(text)
+    day = dt.date(2026, 10, 5)
+    bot.show_report(cfg.report_chat_id, day)  # same path as /report when no snapshot exists
+    assert "Оплатили — <b>1</b>" in manual_sends[0]
+
+    fresh = {**old, "paid_count": 4, "built_at": 999}
+    builds = []
+
+    def build_report(day):
+        builds.append(day)
+        store.save_report(fresh)
+        return fresh
+
+    bot.build_report = build_report
+    sent = []
+    bot.send = lambda chat_id, text, markup=None: sent.append(text)
+    assert store.report("2026-10-05")["paid_count"] == 1  # manual snapshot already exists
+    assert bot.scheduled_send(day) is True
+    assert builds == [day]
+    assert "Оплатили — <b>4</b>" in sent[0]
+    assert store.report("2026-10-05")["paid_count"] == 4
+    store.conn.close()
 
 
 def test_every_callback_is_answered():

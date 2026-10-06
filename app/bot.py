@@ -193,11 +193,18 @@ class ReportBot:
         key = day.isoformat()
         if self.store.was_sent(key, self.config.report_chat_id):
             return False
-        report = self.get_report(day)
+        # Manual requests reuse their snapshot; scheduled delivery must always
+        # capture the latest source data immediately before it is sent.
+        report = self.get_report(day, refresh=True)
         text, markup = self.report_screen(report)
         if not self.store.claim_delivery(key, self.config.report_chat_id):
             return False
-        self.send(self.config.report_chat_id, text, markup)
+        try:
+            self.send(self.config.report_chat_id, text, markup)
+        except Exception:
+            self.store.release_delivery(key, self.config.report_chat_id)
+            logger.exception("Daily report send failed; delivery claim released for retry date=%s", key)
+            raise
         self.store.mark_sent(key, self.config.report_chat_id)
         logger.info("Daily report delivered date=%s chat_id=%s", key, self.config.report_chat_id)
         return True
@@ -267,8 +274,8 @@ class ReportBot:
             offset = self.store.telegram_offset()
             logger.info("Report bot started timezone=%s report_time=%s", self.config.timezone, self.config.report_time)
             while True:
-                self.scheduler_tick()
                 try:
+                    self.scheduler_tick()
                     response = self.session.get(f"{self.base_url}/getUpdates", params={"timeout": 25, "offset": offset, "allowed_updates": '["message","callback_query"]'}, timeout=35)
                     response.raise_for_status()
                     payload = response.json()

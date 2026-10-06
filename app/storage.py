@@ -52,7 +52,6 @@ class Store:
 
     def claim_delivery(self, day: str, chat_id: int) -> bool:
         # Atomically reserve the unique day/chat pair before contacting Telegram.
-        # An uncertain network result stays claimed, avoiding duplicate reports.
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             cursor = self.conn.execute(
@@ -64,6 +63,14 @@ class Store:
         except Exception:
             self.conn.rollback()
             raise
+
+    def release_delivery(self, day: str, chat_id: int) -> None:
+        """Release an unsuccessful send claim so the scheduler can retry."""
+        self.conn.execute(
+            "DELETE FROM report_deliveries WHERE report_date=? AND chat_id=? AND status='claimed'",
+            (day, str(chat_id)),
+        )
+        self.conn.commit()
 
     def was_sent(self, day: str, chat_id: int) -> bool:
         return self.conn.execute("SELECT 1 FROM report_deliveries WHERE report_date=? AND chat_id=? AND status='sent'", (day, str(chat_id))).fetchone() is not None
