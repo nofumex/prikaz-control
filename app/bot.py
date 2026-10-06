@@ -20,10 +20,9 @@ from .storage import Store
 
 logger = logging.getLogger(__name__)
 REPORT_KINDS = {
-    "p": ("paid", "💰 Оплатили"),
-    "c": ("contact", "📞 Указали контакт"),
-    "t": ("subscribed_telegram", "📨 Подписались в Telegram"),
-    "m": ("subscribed_max", "📨 Подписались в MAX"),
+    "p": ("paid", "Оплатили"),
+    "c": ("contact", "Указали контакт"),
+    "s": ("subscribed", "Подписались на бота"),
 }
 
 
@@ -145,19 +144,28 @@ class ReportBot:
     def report_screen(self, report: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         day = dt.date.fromisoformat(report["date"])
         subs = report["subscribed"]
-        lines = [f"📊 <b>Судебный приказ · {day.strftime('%d.%m.%Y')}</b>", "", f"Подписались на бота: Telegram <b>{subs['telegram']}</b> · MAX <b>{subs['max']}</b>", "", f"💰 Оплатили — <b>{report['paid_count']}</b>", f"📞 Указали контакт — <b>{report['contact_count']}</b>"]
+        subscribed_count = int(subs.get("telegram", 0)) + int(subs.get("max", 0))
+        lines = [f"📊 <b>Судебный приказ · {day.strftime('%d.%m.%Y')}</b>", "", f"Оплатили — <b>{report['paid_count']}</b>", f"Указали контакт — <b>{report['contact_count']}</b>", f"Подписались на бота — <b>{subscribed_count}</b>"]
         rows = [
-            [{"text": f"💰 Оплатили — {report['paid_count']}", "callback_data": f"l:{day}:p:0"}],
-            [{"text": f"📞 Указали контакт — {report['contact_count']}", "callback_data": f"l:{day}:c:0"}],
-            [{"text": f"📨 Telegram — {subs['telegram']}", "callback_data": f"l:{day}:t:0"}],
-            [{"text": f"📨 MAX — {subs['max']}", "callback_data": f"l:{day}:m:0"}],
+            [{"text": f"Оплатили — {report['paid_count']}", "callback_data": f"l:{day}:p:0"}],
+            [{"text": f"Указали контакт — {report['contact_count']}", "callback_data": f"l:{day}:c:0"}],
+            [{"text": f"Подписались на бота — {subscribed_count}", "callback_data": f"l:{day}:s:0"}],
         ]
+        latest_day = dt.datetime.now(self.tz).date() - dt.timedelta(days=1)
+        day_nav = []
+        day_nav.append({"text": "←", "callback_data": f"r:{day - dt.timedelta(days=1)}"})
+        if day < latest_day:
+            day_nav.append({"text": "→", "callback_data": f"r:{day + dt.timedelta(days=1)}"})
+        rows.append(day_nav)
         return "\n".join(lines), self.inline(rows)
 
     def deal_list_screen(self, report: dict[str, Any], kind: str, page: int) -> tuple[str, dict[str, Any]]:
         day = report["date"]
         data_key, title = REPORT_KINDS[kind]
-        ids = report["deals"].get(data_key, [])
+        if data_key == "subscribed":
+            ids = sorted(set(report["deals"].get("subscribed_telegram", [])) | set(report["deals"].get("subscribed_max", [])))
+        else:
+            ids = report["deals"].get(data_key, [])
         part, page, pages = paginate(ids, page, self.config.page_size)
         lines = [f"<b>{html.escape(title)} · {dt.date.fromisoformat(day).strftime('%d.%m.%Y')}</b>", f"Сделок: <b>{len(ids)}</b>", f"Страница <b>{page + 1}/{pages}</b>", ""]
         rows: list[list[dict[str, str]]] = []
@@ -239,7 +247,11 @@ class ReportBot:
                 elif data.startswith("d:"):
                     _, lead_text, kind, page_text, day_text = data.split(":", 4)
                     report = self.get_report(dt.date.fromisoformat(day_text))
-                    allowed = report.get("deals", {}).get(REPORT_KINDS[kind][0], [])
+                    data_key = REPORT_KINDS[kind][0]
+                    if data_key == "subscribed":
+                        allowed = sorted(set(report.get("deals", {}).get("subscribed_telegram", [])) | set(report.get("deals", {}).get("subscribed_max", [])))
+                    else:
+                        allowed = report.get("deals", {}).get(data_key, [])
                     lead_id = int(lead_text)
                     if lead_id not in allowed:
                         raise ValueError("Deal is not part of this report snapshot")

@@ -95,6 +95,48 @@ def test_pagination_keeps_compact_telegram_callbacks():
     assert [button["text"] for button in markup["inline_keyboard"][-2]] == ["←", "2/4", "→"]
 
 
+def test_report_menu_has_three_categories_and_day_navigation():
+    cfg = Config("token", 77, "sqlite:///unused", "https://amo.test", "x", "Судебный приказ", "Клиенты по судебному приказу", "Asia/Krasnoyarsk", "09:00", Path("reports.sqlite3"))
+    bot = ReportBot(cfg, object(), object())
+    latest = dt.datetime.now(bot.tz).date() - dt.timedelta(days=1)
+    report = {
+        "date": latest.isoformat(), "subscribed": {"telegram": 2, "max": 3},
+        "paid_count": 4, "contact_count": 5,
+    }
+    text, markup = bot.report_screen(report)
+    buttons = [button for row in markup["inline_keyboard"] for button in row]
+    category_buttons = buttons[:3]
+    assert [button["text"] for button in category_buttons] == [
+        "Оплатили — 4", "Указали контакт — 5", "Подписались на бота — 5",
+    ]
+    assert [button["callback_data"] for button in category_buttons] == [
+        f"l:{latest}:p:0", f"l:{latest}:c:0", f"l:{latest}:s:0",
+    ]
+    assert "Telegram" not in text and "MAX" not in text
+    assert "💰" not in text and "📞" not in text
+    assert [button["text"] for button in markup["inline_keyboard"][-1]] == ["←"]
+    assert markup["inline_keyboard"][-1][0]["callback_data"] == f"r:{latest - dt.timedelta(days=1)}"
+
+    historical = {**report, "date": (latest - dt.timedelta(days=1)).isoformat()}
+    _, historical_markup = bot.report_screen(historical)
+    assert [button["text"] for button in historical_markup["inline_keyboard"][-1]] == ["←", "→"]
+
+
+def test_subscribed_deal_list_combines_platforms_and_deduplicates():
+    cfg = Config("token", 77, "sqlite:///unused", "https://amo.test", "x", "Судебный приказ", "Клиенты по судебному приказу", "Asia/Krasnoyarsk", "09:00", Path("reports.sqlite3"))
+    bot = ReportBot(cfg, object(), object())
+    report = {
+        "date": "2026-10-05",
+        "deals": {"subscribed_telegram": [101, 102], "subscribed_max": [102, 201]},
+        "deal_names": {},
+    }
+    text, markup = bot.deal_list_screen(report, "s", 0)
+    assert "Сделок: <b>3</b>" in text
+    assert [row[0]["callback_data"] for row in markup["inline_keyboard"][:3]] == [
+        "d:101:s:0:2026-10-05", "d:102:s:0:2026-10-05", "d:201:s:0:2026-10-05",
+    ]
+
+
 def test_deal_that_moved_to_sales_stays_in_judicial_source_metrics():
     report = {
         "subscribed": {"telegram": 1, "max": 0}, "contact_count": 1, "paid_count": 1,
