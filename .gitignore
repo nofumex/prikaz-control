@@ -1,0 +1,6 @@
+.env
+data/
+*.sqlite3
+report-bot.log
+__pycache__/
+.pytest_cache/
