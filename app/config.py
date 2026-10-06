@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 @dataclass(frozen=True)
 class Config:
     telegram_token: str
-    report_chat_id: int
+    report_chat_id: int | None
     source_database_url: str
     amocrm_base_url: str
     amocrm_access_token: str
@@ -33,6 +33,12 @@ def load_config() -> Config:
     missing = [key for key, value in required.items() if not value]
     if missing:
         raise RuntimeError("Missing required environment variables: " + ", ".join(missing))
+    report_chat_value = os.getenv("REPORT_CHAT_ID", "").strip()
+    try:
+        report_chat_id = int(report_chat_value) if report_chat_value else None
+    except ValueError as exc:
+        raise RuntimeError("REPORT_CHAT_ID must be a Telegram chat ID") from exc
+
     managers_value = os.getenv("MANAGER_IDS", "").strip()
     if managers_value:
         try:
@@ -40,13 +46,9 @@ def load_config() -> Config:
         except ValueError as exc:
             raise RuntimeError("MANAGER_IDS must be comma-separated Telegram chat IDs") from exc
     else:
-        legacy_chat_id = os.getenv("REPORT_CHAT_ID", "").strip()
-        if not legacy_chat_id:
+        if report_chat_id is None:
             raise RuntimeError("Missing required environment variable: MANAGER_IDS")
-        try:
-            manager_ids = (int(legacy_chat_id),)
-        except ValueError as exc:
-            raise RuntimeError("REPORT_CHAT_ID must be a Telegram chat ID") from exc
+        manager_ids = (report_chat_id,)
     if not manager_ids:
         raise RuntimeError("MANAGER_IDS must contain at least one Telegram chat ID")
     timezone = os.getenv("TIMEZONE", "Asia/Krasnoyarsk").strip()
@@ -63,7 +65,7 @@ def load_config() -> Config:
         raise RuntimeError("DAILY_REPORT_TIME must be HH:MM") from exc
     return Config(
         telegram_token=required["REPORT_TG_BOT_TOKEN"],
-        report_chat_id=manager_ids[0],
+        report_chat_id=report_chat_id,
         source_database_url=required["SOURCE_DATABASE_URL"],
         amocrm_base_url=required["AMOCRM_BASE_URL"].rstrip("/"),
         amocrm_access_token=required["AMOCRM_ACCESS_TOKEN"],

@@ -141,7 +141,7 @@ class ReportBot:
     def inline(rows: list[list[dict[str, str]]]) -> dict[str, Any]:
         return {"inline_keyboard": rows}
 
-    def report_screen(self, report: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    def report_screen(self, report: dict[str, Any], allow_today: bool = False) -> tuple[str, dict[str, Any]]:
         day = dt.date.fromisoformat(report["date"])
         subs = report["subscribed"]
         subscribed_count = int(subs.get("telegram", 0)) + int(subs.get("max", 0))
@@ -151,11 +151,12 @@ class ReportBot:
             [{"text": f"Указали контакт — {report['contact_count']}", "callback_data": f"l:{day}:c:0"}],
             [{"text": f"Подписались на бота — {subscribed_count}", "callback_data": f"l:{day}:s:0"}],
         ]
-        latest_day = dt.datetime.now(self.tz).date() - dt.timedelta(days=1)
+        today = dt.datetime.now(self.tz).date()
+        latest_day = today if allow_today else today - dt.timedelta(days=1)
         day_nav = []
         day_nav.append({"text": "←", "callback_data": f"r:{day - dt.timedelta(days=1)}"})
         day_nav.append({"text": day.strftime("%d.%m"), "callback_data": "noop"})
-        if day < latest_day:
+        if allow_today and day < latest_day:
             day_nav.append({"text": "→", "callback_data": f"r:{day + dt.timedelta(days=1)}"})
         else:
             day_nav.append({"text": "→", "callback_data": "noop"})
@@ -190,8 +191,11 @@ class ReportBot:
 
     def show_report(self, chat_id: int, day: dt.date, message_id: int = 0) -> None:
         try:
+            if day > self.latest_allowed_day(chat_id):
+                self.send(chat_id, "Доступны отчеты только за вчерашний день и ранее.")
+                return
             report = self.get_report(day)
-            text, markup = self.report_screen(report)
+            text, markup = self.report_screen(report, allow_today=chat_id == self.config.report_chat_id)
             if message_id:
                 self.edit(chat_id, message_id, text, markup)
             else:
@@ -235,7 +239,12 @@ class ReportBot:
         return delivered
 
     def is_manager(self, chat_id: int) -> bool:
-        return chat_id in (self.config.manager_ids or (self.config.report_chat_id,))
+        managers = self.config.manager_ids or (() if self.config.report_chat_id is None else (self.config.report_chat_id,))
+        return chat_id in managers or chat_id == self.config.report_chat_id
+
+    def latest_allowed_day(self, chat_id: int) -> dt.date:
+        today = dt.datetime.now(self.tz).date()
+        return today if chat_id == self.config.report_chat_id else today - dt.timedelta(days=1)
 
     def scheduler_tick(self, now: dt.datetime | None = None) -> bool:
         now = now or dt.datetime.now(self.tz)
@@ -258,15 +267,24 @@ class ReportBot:
                 if data == "noop":
                     return
                 if data.startswith("r:"):
-                    self.show_report(chat_id, dt.date.fromisoformat(data[2:]), message_id)
+                    target_day = dt.date.fromisoformat(data[2:])
+                    if target_day > self.latest_allowed_day(chat_id):
+                        raise ValueError("Report date is not available for this manager")
+                    self.show_report(chat_id, target_day, message_id)
                 elif data.startswith("l:"):
                     _, day_text, kind, page = data.split(":", 3)
-                    report = self.get_report(dt.date.fromisoformat(day_text))
+                    target_day = dt.date.fromisoformat(day_text)
+                    if target_day > self.latest_allowed_day(chat_id):
+                        raise ValueError("Report date is not available for this manager")
+                    report = self.get_report(target_day)
                     text, markup = self.deal_list_screen(report, kind, int(page))
                     self.edit(chat_id, message_id, text, markup)
                 elif data.startswith("d:"):
                     _, lead_text, kind, page_text, day_text = data.split(":", 4)
-                    report = self.get_report(dt.date.fromisoformat(day_text))
+                    target_day = dt.date.fromisoformat(day_text)
+                    if target_day > self.latest_allowed_day(chat_id):
+                        raise ValueError("Report date is not available for this manager")
+                    report = self.get_report(target_day)
                     data_key = REPORT_KINDS[kind][0]
                     if data_key == "subscribed":
                         allowed = sorted(set(report.get("deals", {}).get("subscribed_telegram", [])) | set(report.get("deals", {}).get("subscribed_max", [])))
@@ -296,7 +314,7 @@ class ReportBot:
             try:
                 today = dt.datetime.now(self.tz).date()
                 self.store.activate_manager(chat_id, today.isoformat())
-                self.show_report(chat_id, today)
+                self.show_report(chat_id, self.latest_allowed_day(chat_id))
             except Exception:
                 logger.exception("Manager activation failed chat_id=%s", chat_id)
                 self.send(chat_id, "Не удалось открыть меню. Ошибка записана в журнал.")

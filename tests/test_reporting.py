@@ -120,7 +120,7 @@ def test_report_menu_has_three_categories_and_day_navigation():
     assert markup["inline_keyboard"][-1][2]["callback_data"] == "noop"
 
     historical = {**report, "date": (latest - dt.timedelta(days=1)).isoformat()}
-    _, historical_markup = bot.report_screen(historical)
+    _, historical_markup = bot.report_screen(historical, allow_today=True)
     assert [button["text"] for button in historical_markup["inline_keyboard"][-1]] == ["←", historical["date"][8:10] + "." + historical["date"][5:7], "→"]
     assert historical_markup["inline_keyboard"][-1][2]["callback_data"] == f"r:{latest.isoformat()}"
 
@@ -281,6 +281,28 @@ def test_start_registers_activation_and_opens_current_day_menu_without_resetting
     bot.handle_update(update)
     assert store.manager_activation_date(77) == "2026-10-01"
     assert opened[-1] == (77, today)
+    store.conn.close()
+
+
+def test_non_report_chat_starts_at_yesterday_and_only_paginates_backwards(tmp_path: Path):
+    cfg = Config("token", 77, "sqlite:///unused", "https://amo.test", "x", "Судебный приказ", "Клиенты по судебному приказу", "Asia/Krasnoyarsk", "09:00", tmp_path / "reports.sqlite3", manager_ids=(77, 88))
+    store = Store(cfg.report_database_path)
+    bot = ReportBot(cfg, store, object())
+    opened = []
+    bot.show_report = lambda chat_id, day, message_id=0: opened.append((chat_id, day))
+    bot.handle_update({"message": {"text": "/start", "chat": {"id": 88}}})
+    today = dt.datetime.now(bot.tz).date()
+    assert opened == [(88, today - dt.timedelta(days=1))]
+
+    report = {
+        "date": (today - dt.timedelta(days=1)).isoformat(),
+        "subscribed": {"telegram": 0, "max": 0}, "paid_count": 0, "contact_count": 0,
+    }
+    _, markup = bot.report_screen(report)
+    day_nav = markup["inline_keyboard"][-1]
+    assert day_nav[0]["callback_data"] == f"r:{today - dt.timedelta(days=2)}"
+    assert day_nav[1]["callback_data"] == "noop"
+    assert day_nav[2]["callback_data"] == "noop"
     store.conn.close()
 
 
