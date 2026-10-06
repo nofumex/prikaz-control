@@ -26,6 +26,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS telegram_state(
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS manager_activations(
+                chat_id TEXT PRIMARY KEY, activation_date TEXT NOT NULL
+            );
         """)
         columns = {row[1] for row in self.conn.execute("PRAGMA table_info(report_deliveries)")}
         if "status" not in columns:
@@ -74,6 +77,42 @@ class Store:
 
     def was_sent(self, day: str, chat_id: int) -> bool:
         return self.conn.execute("SELECT 1 FROM report_deliveries WHERE report_date=? AND chat_id=? AND status='sent'", (day, str(chat_id))).fetchone() is not None
+
+    def activate_manager(self, chat_id: int, day: str) -> str:
+        """Record first activation without resetting it on later /start calls."""
+        row = self.conn.execute(
+            "SELECT activation_date FROM manager_activations WHERE chat_id=?", (str(chat_id),)
+        ).fetchone()
+        if row:
+            return row["activation_date"]
+
+        # Preserve managers already receiving reports before activation tracking
+        # was introduced. Their earliest successful delivery proves they were active.
+        previous = self.conn.execute(
+            "SELECT MIN(report_date) AS first_date FROM report_deliveries WHERE chat_id=? AND status='sent'",
+            (str(chat_id),),
+        ).fetchone()["first_date"]
+        activation_date = previous or day
+        self.conn.execute(
+            "INSERT OR IGNORE INTO manager_activations(chat_id, activation_date) VALUES(?,?)",
+            (str(chat_id), activation_date),
+        )
+        self.conn.commit()
+        return activation_date
+
+    def manager_activation_date(self, chat_id: int) -> str | None:
+        row = self.conn.execute(
+            "SELECT activation_date FROM manager_activations WHERE chat_id=?", (str(chat_id),)
+        ).fetchone()
+        if row:
+            return row["activation_date"]
+        # Existing managers may not have used /start since the upgrade. Treat a
+        # successful historical delivery as their existing activation evidence.
+        row = self.conn.execute(
+            "SELECT MIN(report_date) AS first_date FROM report_deliveries WHERE chat_id=? AND status='sent'",
+            (str(chat_id),),
+        ).fetchone()
+        return row["first_date"] if row else None
 
     def telegram_offset(self) -> int:
         row = self.conn.execute("SELECT value FROM telegram_state WHERE key='update_offset'").fetchone()

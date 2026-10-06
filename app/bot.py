@@ -202,7 +202,13 @@ class ReportBot:
 
     def scheduled_send(self, day: dt.date) -> bool:
         key = day.isoformat()
-        recipients = self.config.manager_ids or (self.config.report_chat_id,)
+        recipients = tuple(
+            chat_id for chat_id in (self.config.manager_ids or (self.config.report_chat_id,))
+            if (activation_date := self.store.manager_activation_date(chat_id)) is not None
+            and activation_date <= key
+        )
+        if not recipients:
+            return False
         if all(self.store.was_sent(key, chat_id) for chat_id in recipients):
             return False
         # Manual requests reuse their snapshot; scheduled delivery must always
@@ -286,7 +292,16 @@ class ReportBot:
             return
         text = str(message.get("text") or "").strip()
         command = text.split()[0].split("@", 1)[0].lower() if text else ""
-        if command in {"/start", "/help", "/report", "/yesterday"}:
+        if command == "/start":
+            try:
+                today = dt.datetime.now(self.tz).date()
+                self.store.activate_manager(chat_id, today.isoformat())
+                self.show_report(chat_id, today)
+            except Exception:
+                logger.exception("Manager activation failed chat_id=%s", chat_id)
+                self.send(chat_id, "Не удалось открыть меню. Ошибка записана в журнал.")
+            return
+        if command in {"/help", "/report", "/yesterday"}:
             try:
                 day = dt.date.fromisoformat(text.split(maxsplit=1)[1]) if command == "/report" and len(text.split()) > 1 else dt.datetime.now(self.tz).date() - dt.timedelta(days=1)
                 self.show_report(chat_id, day)

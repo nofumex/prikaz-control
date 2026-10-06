@@ -179,6 +179,7 @@ def test_deal_card_matches_crm_controller_detail_fields_and_escapes_html():
 def test_scheduler_records_delivery_and_does_not_repeat_after_restart(tmp_path: Path):
     cfg = Config("token", 77, "sqlite:///unused", "https://amo.test", "x", "Судебный приказ", "Клиенты по судебному приказу", "Asia/Krasnoyarsk", "09:00", tmp_path / "reports.sqlite3")
     store = Store(cfg.report_database_path)
+    store.activate_manager(77, "2026-10-05")
     report = {"date": "2026-10-05", "timezone": cfg.timezone, "subscribed": {"telegram": 0, "max": 0}, "paid_count": 0, "contact_count": 0, "deals": {"paid": [], "contact": [], "subscribed_telegram": [], "subscribed_max": []}, "deal_names": {}}
     store.save_report(report)
 
@@ -208,6 +209,7 @@ def test_scheduler_records_delivery_and_does_not_repeat_after_restart(tmp_path: 
 def test_failed_telegram_send_releases_claim_and_next_attempt_succeeds(tmp_path: Path):
     cfg = Config("token", 77, "sqlite:///unused", "https://amo.test", "x", "Судебный приказ", "Клиенты по судебному приказу", "Asia/Krasnoyarsk", "09:00", tmp_path / "reports.sqlite3")
     store = Store(cfg.report_database_path)
+    store.activate_manager(77, "2026-10-05")
     report = {"date": "2026-10-05", "timezone": cfg.timezone, "subscribed": {"telegram": 0, "max": 0}, "paid_count": 0, "contact_count": 0, "deals": {"paid": [], "contact": [], "subscribed_telegram": [], "subscribed_max": []}, "deal_names": {}}
     store.save_report(report)
 
@@ -239,6 +241,8 @@ def test_failed_telegram_send_releases_claim_and_next_attempt_succeeds(tmp_path:
 def test_scheduler_sends_once_to_every_manager_and_tracks_each_chat(tmp_path: Path):
     cfg = Config("token", 77, "sqlite:///unused", "https://amo.test", "x", "Судебный приказ", "Клиенты по судебному приказу", "Asia/Krasnoyarsk", "09:00", tmp_path / "reports.sqlite3", manager_ids=(77, 88))
     store = Store(cfg.report_database_path)
+    store.activate_manager(77, "2026-10-05")
+    store.activate_manager(88, "2026-10-05")
     report = {"date": "2026-10-05", "timezone": cfg.timezone, "subscribed": {"telegram": 1, "max": 2}, "paid_count": 0, "contact_count": 0, "deals": {"paid": [], "contact": [], "subscribed_telegram": [], "subscribed_max": []}, "deal_names": {}}
 
     class FakeAmo:
@@ -257,9 +261,72 @@ def test_scheduler_sends_once_to_every_manager_and_tracks_each_chat(tmp_path: Pa
     store.conn.close()
 
 
+def test_start_registers_activation_and_opens_current_day_menu_without_resetting(tmp_path: Path):
+    cfg = Config("token", 77, "sqlite:///unused", "https://amo.test", "x", "Судебный приказ", "Клиенты по судебному приказу", "Asia/Krasnoyarsk", "09:00", tmp_path / "reports.sqlite3")
+    store = Store(cfg.report_database_path)
+    bot = ReportBot(cfg, store, object())
+    opened = []
+    bot.show_report = lambda chat_id, day, message_id=0: opened.append((chat_id, day))
+    update = {"message": {"text": "/start", "chat": {"id": 77}}}
+    today = dt.datetime.now(bot.tz).date()
+
+    bot.handle_update(update)
+    assert store.manager_activation_date(77) == today.isoformat()
+    assert opened == [(77, today)]
+
+    store.conn.execute("UPDATE manager_activations SET activation_date='2026-10-01' WHERE chat_id='77'")
+    store.conn.commit()
+    bot.handle_update(update)
+    assert store.manager_activation_date(77) == "2026-10-01"
+    assert opened[-1] == (77, today)
+    store.conn.close()
+
+
+def test_new_manager_receives_no_pre_activation_reports_and_first_next_day(tmp_path: Path):
+    cfg = Config("token", 77, "sqlite:///unused", "https://amo.test", "x", "Судебный приказ", "Клиенты по судебному приказу", "Asia/Krasnoyarsk", "09:00", tmp_path / "reports.sqlite3")
+    store = Store(cfg.report_database_path)
+    store.activate_manager(77, "2026-10-06")
+    report = {"date": "2026-10-06", "timezone": cfg.timezone, "subscribed": {"telegram": 0, "max": 0}, "paid_count": 0, "contact_count": 0, "deals": {"paid": [], "contact": [], "subscribed_telegram": [], "subscribed_max": []}, "deal_names": {}}
+
+    class FakeAmo:
+        pass
+
+    bot = ReportBot(cfg, store, FakeAmo())
+    builds = []
+    bot.build_report = lambda day: builds.append(day) or report
+    sent = []
+    bot.send = lambda chat_id, text, markup=None: sent.append((chat_id, text))
+    assert bot.scheduled_send(dt.date(2026, 10, 5)) is False
+    assert builds == [] and sent == []
+    assert bot.scheduled_send(dt.date(2026, 10, 6)) is True
+    assert builds == [dt.date(2026, 10, 6)]
+    assert len(sent) == 1 and store.was_sent("2026-10-06", 77)
+    store.conn.close()
+
+
+def test_existing_manager_with_delivery_history_remains_active(tmp_path: Path):
+    cfg = Config("token", 77, "sqlite:///unused", "https://amo.test", "x", "Судебный приказ", "Клиенты по судебному приказу", "Asia/Krasnoyarsk", "09:00", tmp_path / "reports.sqlite3")
+    store = Store(cfg.report_database_path)
+    assert store.claim_delivery("2026-10-05", 77)
+    store.mark_sent("2026-10-05", 77)
+    report = {"date": "2026-10-06", "timezone": cfg.timezone, "subscribed": {"telegram": 0, "max": 0}, "paid_count": 0, "contact_count": 0, "deals": {"paid": [], "contact": [], "subscribed_telegram": [], "subscribed_max": []}, "deal_names": {}}
+
+    class FakeAmo:
+        pass
+
+    bot = ReportBot(cfg, store, FakeAmo())
+    bot.build_report = lambda day: report
+    sent = []
+    bot.send = lambda chat_id, text, markup=None: sent.append(chat_id)
+    assert bot.scheduled_send(dt.date(2026, 10, 6)) is True
+    assert sent == [77]
+    store.conn.close()
+
+
 def test_scheduler_refreshes_report_created_by_manual_request(tmp_path: Path):
     cfg = Config("token", 77, "sqlite:///unused", "https://amo.test", "x", "Судебный приказ", "Клиенты по судебному приказу", "Asia/Krasnoyarsk", "09:00", tmp_path / "reports.sqlite3")
     store = Store(cfg.report_database_path)
+    store.activate_manager(77, "2026-10-05")
     old = {"date": "2026-10-05", "timezone": cfg.timezone, "subscribed": {"telegram": 0, "max": 0}, "paid_count": 1, "contact_count": 0, "deals": {"paid": [], "contact": [], "subscribed_telegram": [], "subscribed_max": []}, "deal_names": {}}
 
     class FakeAmo:
